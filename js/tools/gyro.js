@@ -384,16 +384,29 @@ var dsGyro = execMain(function() {
 		return ax + ' 轴 ' + ang.toFixed(0) + '°';
 	}
 
+	// 给设置面板显示用：直接读虚拟魔方顶面/前面中心颜色，就是当前坐标名（DF / UF ...）
+	function viewLabel() {
+		try {
+			var po = getPuzzleObj();
+			var tw = po && po.twisty;
+			var fc = (tw && tw.getFacelet) ? tw.getFacelet(tw) : null;
+			if (fc && fc.length >= 54) {
+				return fc.charAt(4) + fc.charAt(22);
+			}
+		} catch (e) {}
+		return '?';
+	}
+
 	function paint(qrel) {
 		var obj = getObj3d();
 		if (!obj) {
 			return;
 		}
-		// vq 是「当前显示坐标」相对默认 UF 的整体旋转（DF 视角下就是绕 Z 180°）。
-		// 左乘它：读到相对旋转为零时，魔方就停在当前坐标的正立姿态上，
-		// 而不是永远回到 UF；切换坐标后也会自动跟着换。
-		var vq = viewQ || readViewQuat() || { w: 1, x: 0, y: 0, z: 0 };
-		var qc = qmul(vq, qmul(qmul(Q_M, qrel), qconj(Q_M)));
+		// 关键：虚拟魔方的逻辑状态（facelet）里已经包含了当前坐标的整体旋转。
+		// PLL 训练模式 preScrT=z2 时，resetVRC 会 applyMoves(z2) 真的把魔方转过去，
+		// 实测中心块从 URF 变成 DLF。所以这里绝对不能再左乘视角旋转，
+		// 否则等于转两次、屏幕上回到 UF —— 这正是「标定后还是 UF」的根因。
+		var qc = qmul(qmul(Q_M, qrel), qconj(Q_M));
 		obj.useQuaternion = true;
 		obj.quaternion.set(qc.x, qc.y, qc.z, qc.w);
 		if (obj !== scaledObj) {
@@ -485,18 +498,23 @@ var dsGyro = execMain(function() {
 			return;
 		}
 		var ident = { w: 1, x: 0, y: 0, z: 0 };
-		var vq = viewQ || readViewQuat() || ident;
 		calibQ = qnorm(st.quat);
 		lastTick = 0;
-		// 标定后设备相对旋转为零，屏幕上的魔方应停在「当前坐标的正立姿态」。
-		// 这个正立姿态由 paint() 里的 vq 左乘自动给出，所以这里 renderQ 必须是单位四元数；
-		// 之前误写成 renderQ = vq，会让魔方先跳到错误姿态再插值回来。
+		// 标定 = 把「现在这个手持姿态」定义为相对零点。设备相对旋转归零后，
+		// 屏幕魔方就停在它当前坐标下的正立姿态上（PLL/DF 时就是黄顶绿前）。
+		// 这里必须是单位四元数，不能写 renderQ = vq，否则会先跳到错误姿态再插值回来。
 		renderQ = ident;
 		if (follow) {
 			paint(ident);
 		}
-		var d = quatDesc(vq);
-		toast('已按当前坐标标定（' + (d == '无' ? 'UF' : d) + '）');
+		var topFace = '?';
+		try {
+			var po = getPuzzleObj();
+			var tw = po && po.twisty;
+			var fc = (tw && tw.getFacelet) ? tw.getFacelet(tw) : null;
+			if (fc) { topFace = fc.charAt(4); }
+		} catch (e) {}
+		toast('已标定：屏幕按当前坐标正立（顶面 ' + topFace + '）');
 	}
 
 	function setAutoFollow(v) {
@@ -566,7 +584,7 @@ var dsGyro = execMain(function() {
 		var viewTxt = $('<span>').css({
 			marginLeft: '0.8em',
 			opacity: 0.7
-		}).text('视角补偿：无');
+		}).text('当前坐标：?');
 		box.append(dot).append(txt).append(btnCal).append(btnFollow).append(lab).append(viewTxt);
 		holder.append(box);
 		rowEls = {
@@ -587,7 +605,7 @@ var dsGyro = execMain(function() {
 		rowEls.dot.css('background', info.color);
 		rowEls.txt.text('陀螺仪：' + info.text);
 		if (rowEls.viewTxt) {
-			rowEls.viewTxt.text('视角补偿：' + quatDesc(viewQ));
+			rowEls.viewTxt.text('当前坐标：' + viewLabel());
 		}
 		if (rowEls.btnFollow) {
 			rowEls.btnFollow.val(follow ? '停止跟随' : '开始跟随');
