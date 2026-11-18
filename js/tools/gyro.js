@@ -237,13 +237,53 @@ var dsGyro = execMain(function() {
 		return qmul(qconj(calibQ), q);
 	}
 
+	// 「魔方视角」(giiOri) 会把显示内容整体转过去；陀螺仪跟随时必须把它抵消，
+	// 否则屏幕上看到的是「转过去之后再跟你转」，用户会觉得顺逆时针反了
+	// （PLL 训练这类项目会自动切到 DF(z2) 视角，最容易撞上）。
+	// 显示 = 外层 · 内容 = (q · R⁻¹) · (R · M) = q · M。
+	var oriCache = null;
+	var oriQ = null;
+	var AXIS_Q = [
+		{ w: Math.SQRT1_2, x: -Math.SQRT1_2, y: 0, z: 0 },   // x：绕 X 轴 -90°
+		{ w: Math.SQRT1_2, x: 0, y: -Math.SQRT1_2, z: 0 },   // y：绕 Y 轴 -90°
+		{ w: Math.SQRT1_2, x: 0, y: 0, z: -Math.SQRT1_2 }    // z：绕 Z 轴 -90°
+	];
+
+	function viewQuat() {
+		var ori = 0;
+		try { ori = kernel.getProp('giiOri'); } catch (e) { ori = 0; }
+		if (ori == 'auto') { ori = 0; }
+		ori = ~~ori;
+		if (ori === oriCache && oriQ) { return oriQ; }
+		oriCache = ori;
+		oriQ = { w: 1, x: 0, y: 0, z: 0 };
+		if (!ori) { return oriQ; }
+		try {
+			var rot = mathlib.CubieCube.rotMulI[ori][0];
+			var parts = String(mathlib.CubieCube.rot2str[rot] || '').split(/\s+/);
+			for (var i = 0; i < parts.length; i++) {
+				var m = /^([xyz])(2|')?$/.exec(parts[i]);
+				if (!m) { continue; }
+				var aq = AXIS_Q['xyz'.indexOf(m[1])];
+				var times = m[2] == '2' ? 2 : (m[2] == "'" ? 3 : 1);
+				for (var k = 0; k < times; k++) { oriQ = qmul(oriQ, aq); }
+			}
+		} catch (e) {}
+		return oriQ;
+	}
+
 	function paint(qrel) {
 		var obj = getObj3d();
 		if (!obj) {
 			return;
 		}
 		var qc = qmul(qmul(Q_M, qrel), qconj(Q_M));
+		var vq = viewQuat();
+		if (vq.x || vq.y || vq.z) {
+			qc = qmul(qc, qconj(vq));
+		}
 		obj.useQuaternion = true;
+		obj.quaternion.set(qc.x, qc.y, qc.z, qc.w);
 		obj.quaternion.set(qc.x, qc.y, qc.z, qc.w);
 		if (obj !== scaledObj) {
 			setStickerScale(obj, STICKER_SCALE);
