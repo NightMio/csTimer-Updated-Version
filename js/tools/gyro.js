@@ -272,13 +272,97 @@ var dsGyro = execMain(function() {
 		return oriQ;
 	}
 
+	// 实际显示姿态的旋转：中心块只随整体旋转移动，读三个面的中心颜色即可唯一确定。
+	// 这样不用猜是哪个设置（视角 / 训练模式预旋转 / 打乱）把魔方转过去的。
+	var V_DIR = {
+		U: [0, 1, 0], R: [1, 0, 0], F: [0, 0, 1],
+		D: [0, -1, 0], L: [-1, 0, 0], B: [0, 0, -1]
+	};
+	var viewQ = null;
+
+	function matToQuat(m) {
+		var tr = m[0][0] + m[1][1] + m[2][2];
+		var q = { w: 1, x: 0, y: 0, z: 0 };
+		var s;
+		if (tr > 0) {
+			s = Math.sqrt(tr + 1) * 2;
+			q.w = 0.25 * s;
+			q.x = (m[2][1] - m[1][2]) / s;
+			q.y = (m[0][2] - m[2][0]) / s;
+			q.z = (m[1][0] - m[0][1]) / s;
+		} else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) {
+			s = Math.sqrt(1 + m[0][0] - m[1][1] - m[2][2]) * 2;
+			q.w = (m[2][1] - m[1][2]) / s;
+			q.x = 0.25 * s;
+			q.y = (m[0][1] + m[1][0]) / s;
+			q.z = (m[0][2] + m[2][0]) / s;
+		} else if (m[1][1] > m[2][2]) {
+			s = Math.sqrt(1 + m[1][1] - m[0][0] - m[2][2]) * 2;
+			q.w = (m[0][2] - m[2][0]) / s;
+			q.x = (m[0][1] + m[1][0]) / s;
+			q.y = 0.25 * s;
+			q.z = (m[1][2] + m[2][1]) / s;
+		} else {
+			s = Math.sqrt(1 + m[2][2] - m[0][0] - m[1][1]) * 2;
+			q.w = (m[1][0] - m[0][1]) / s;
+			q.x = (m[0][2] + m[2][0]) / s;
+			q.y = (m[1][2] + m[2][1]) / s;
+			q.z = 0.25 * s;
+		}
+		return qnorm(q);
+	}
+
+	function readViewQuat() {
+		try {
+			var po = getPuzzleObj();
+			var tw = po && po.twisty;
+			if (!tw || !tw.getFacelet) {
+				return null;
+			}
+			var fc = tw.getFacelet(tw);
+			if (!fc || fc.length < 54) {
+				return null;
+			}
+			var a = fc.charAt(4);
+			var b = fc.charAt(13);
+			var c = fc.charAt(22);
+			var va = V_DIR[a];
+			var vb = V_DIR[b];
+			var vc = V_DIR[c];
+			if (!va || !vb || !vc || a == b || b == c || a == c) {
+				return null;
+			}
+			// 行向量依次是 vb / va / vc：满足 R·vb = e_x、R·va = e_y、R·vc = e_z
+			return matToQuat([vb, va, vc]);
+		} catch (e) {
+			return null;
+		}
+	}
+
+	// 设置面板里显示用：把补偿旋转描述成「绕某轴 X°」
+	function quatDesc(q) {
+		if (!q) {
+			return '无';
+		}
+		var w = Math.min(1, Math.abs(q.w));
+		var ang = 2 * Math.acos(w) * 180 / Math.PI;
+		if (ang < 1) {
+			return '无';
+		}
+		var x = Math.abs(q.x);
+		var y = Math.abs(q.y);
+		var z = Math.abs(q.z);
+		var ax = (x >= y && x >= z) ? 'X' : (y >= z ? 'Y' : 'Z');
+		return ax + ' 轴 ' + ang.toFixed(0) + '°';
+	}
+
 	function paint(qrel) {
 		var obj = getObj3d();
 		if (!obj) {
 			return;
 		}
 		var qc = qmul(qmul(Q_M, qrel), qconj(Q_M));
-		var vq = viewQuat();
+		var vq = viewQ || viewQuat();
 		if (vq.x || vq.y || vq.z) {
 			qc = qmul(qc, qconj(vq));
 		}
@@ -337,6 +421,9 @@ var dsGyro = execMain(function() {
 		lastTick = 0;
 		vrcWaitCnt = 0;
 		scaledObj = null;
+		try {
+			viewQ = readViewQuat();
+		} catch (e) {}
 		setDistScale(1.45);
 		if (!rafId) {
 			rafId = requestAnimationFrame(loop);
@@ -439,13 +526,18 @@ var dsGyro = execMain(function() {
 			setAutoFollow($(this).prop('checked'));
 		});
 		lab.append(chk).append('连接后自动跟随');
-		box.append(dot).append(txt).append(btnCal).append(btnFollow).append(lab);
+		var viewTxt = $('<span>').css({
+			marginLeft: '0.8em',
+			opacity: 0.7
+		}).text('视角补偿：无');
+		box.append(dot).append(txt).append(btnCal).append(btnFollow).append(lab).append(viewTxt);
 		holder.append(box);
 		rowEls = {
 			box: box,
 			dot: dot,
 			txt: txt,
-			btnFollow: btnFollow
+			btnFollow: btnFollow,
+			viewTxt: viewTxt
 		};
 		return true;
 	}
@@ -457,6 +549,9 @@ var dsGyro = execMain(function() {
 		var info = statusInfo();
 		rowEls.dot.css('background', info.color);
 		rowEls.txt.text('陀螺仪：' + info.text);
+		if (rowEls.viewTxt) {
+			rowEls.viewTxt.text('视角补偿：' + quatDesc(viewQ));
+		}
 		if (rowEls.btnFollow) {
 			rowEls.btnFollow.val(follow ? '停止跟随' : '开始跟随');
 			rowEls.btnFollow.css('opacity', hasGyroFrame(getGyroStat()) ? 1 : 0.5);
@@ -479,6 +574,14 @@ var dsGyro = execMain(function() {
 		if (follow && !hasGyroFrame(st)) {
 			stopFollow(true);
 		}
+		// 虚拟魔方的实际显示姿态可能被整体转过（视角设置 / 训练模式 / 打乱），
+		// 每半秒从 facelet 重新读一次，跟随时再把它抵消掉。
+		try {
+			var vq = readViewQuat();
+			if (vq) {
+				viewQ = vq;
+			}
+		} catch (e) {}
 		renderRow();
 	}
 
@@ -501,6 +604,9 @@ var dsGyro = execMain(function() {
 			return follow;
 		},
 		getStatus: statusInfo,
+		getViewQuat: function() {
+			return readViewQuat();
+		},
 		isAuto: function() {
 			return autoFollow;
 		},
