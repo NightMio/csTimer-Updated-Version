@@ -50,6 +50,30 @@ var dsGyro = execMain(function() {
 		}
 	} catch (e) {}
 
+	// 轻量提示条（csTimer 本体没有 $.toast，别用它）
+	function toast(msg) {
+		try {
+			var d = $('#dsGyroToast');
+			if (!d.length) {
+				d = $('<div id="dsGyroToast"></div>').css({
+					position: 'fixed',
+					left: '50%',
+					top: '16%',
+					transform: 'translateX(-50%)',
+					background: 'rgba(0,0,0,0.78)',
+					color: '#fff',
+					padding: '0.45em 1em',
+					borderRadius: '0.4em',
+					fontSize: '14px',
+					zIndex: 10001,
+					'pointer-events': 'none',
+					whiteSpace: 'nowrap'
+				}).appendTo('body');
+			}
+			d.text(msg).stop(true, true).fadeIn(120).delay(1600).fadeOut(400);
+		} catch (e) {}
+	}
+
 	function qmul(a, b) {
 		return {
 			w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
@@ -457,21 +481,22 @@ var dsGyro = execMain(function() {
 	function doCalibrate() {
 		var st = getGyroStat();
 		if (!st || !st.quat) {
-			$.toast('还没有收到陀螺仪数据，无法标定');
+			toast('还没有收到陀螺仪数据，无法标定');
 			return;
 		}
 		var ident = { w: 1, x: 0, y: 0, z: 0 };
 		var vq = viewQ || readViewQuat() || ident;
 		calibQ = qnorm(st.quat);
 		lastTick = 0;
-		// 标定后立即把魔方摆到「当前坐标的正立姿态」，
-		// 这样按 q 的效果就是把零点对齐到 UF / DF / 任意当前坐标。
-		renderQ = vq;
+		// 标定后设备相对旋转为零，屏幕上的魔方应停在「当前坐标的正立姿态」。
+		// 这个正立姿态由 paint() 里的 vq 左乘自动给出，所以这里 renderQ 必须是单位四元数；
+		// 之前误写成 renderQ = vq，会让魔方先跳到错误姿态再插值回来。
+		renderQ = ident;
 		if (follow) {
-			paint(vq);
+			paint(ident);
 		}
 		var d = quatDesc(vq);
-		$.toast('已按当前坐标标定（' + (d == '无' ? 'UF' : d) + '）');
+		toast('已按当前坐标标定（' + (d == '无' ? 'UF' : d) + '）');
 	}
 
 	function setAutoFollow(v) {
@@ -521,7 +546,7 @@ var dsGyro = execMain(function() {
 				stopFollow(true);
 			} else {
 				if (!hasGyroFrame(getGyroStat())) {
-					$.toast('还没有收到陀螺仪数据');
+					toast('还没有收到陀螺仪数据');
 					return;
 				}
 				startFollow();
