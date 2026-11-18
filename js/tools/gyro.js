@@ -312,6 +312,7 @@ var dsGyro = execMain(function() {
 		return qnorm(q);
 	}
 
+
 	function readViewQuat() {
 		try {
 			var po = getPuzzleObj();
@@ -332,8 +333,11 @@ var dsGyro = execMain(function() {
 			if (!va || !vb || !vc || a == b || b == c || a == c) {
 				return null;
 			}
-			// 行向量依次是 vb / va / vc：满足 R·vb = e_x、R·va = e_y、R·vc = e_z
-			return matToQuat([vb, va, vc]);
+			var q = matToQuat([vb, va, vc]);
+			// 说明：preScrT（训练模式的前置打乱，PLL 默认 z2）在切换时会触发
+			// giikerVRC.resetVRC(true, true, ...) 重建虚拟魔方，所以 facelet 里
+			// 的中心块已经体现了这个整体旋转，这里不需要再叠一次 preConj，否则会抵消。
+			return q;
 		} catch (e) {
 			return null;
 		}
