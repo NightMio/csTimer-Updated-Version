@@ -113,6 +113,14 @@ window.twistyjs = (function() {
 			render();
 		};
 
+		// 供陀螺仪标定后把视角切到「正对前面」用：theta=0、phi=0 时相机在 +Z 轴正前方。
+		this.moveCamera = function(theta, phi, doRender) {
+			moveCamera(theta, phi, doRender);
+		};
+		this.getCamera = function() {
+			return camera;
+		};
+
 		this.initializeTwisty = function(twistyType) {
 			moveQueue = [];
 			currentMove = [];
@@ -424,6 +432,11 @@ window.twistyjs = (function() {
 			var z = dist * Math.sin(phi * Math.TAU / 48);
 			var xy = dist * Math.cos(phi * Math.TAU / 48);
 			camera.position = new THREE.Vector3(xy * Math.sin(theta * Math.TAU / 48), z, xy * Math.cos(theta * Math.TAU / 48));
+			// 默认 target 比原点低 0.075，斜视时没问题；但正对前面（phi=0）时
+			// 这点俯角会把顶面露出一条边，用户要的是「只有一面」的正视图。
+			if (camera.target && camera.target.position) {
+				camera.target.position.y = phi == 0 ? 0 : -0.075;
+			}
 			if (doRender) {
 				render();
 			}

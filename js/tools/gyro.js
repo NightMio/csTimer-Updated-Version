@@ -182,6 +182,31 @@ var dsGyro = execMain(function() {
 		} catch (e) {}
 	}
 
+	// 标定之后让相机正对前面（用户 m04415/m04419 要的效果：不再是从 45° 斜上方
+	// 看到「黄顶+绿前」，而是像图二那样只看到绿色前面本身）。
+	// theta=0、phi=0 时 camera.position = (0, 0, dist)，视线沿 +Z，正对 F 面。
+	// 停止跟随/断开连接时恢复 csTimer 默认的 (0, 6)，也就是原来的斜视角。
+	function setCameraFront(on) {
+		try {
+			var po = getPuzzleObj();
+			if (!po) {
+				return;
+			}
+			// 正视时只看到一个面，投影比斜视小得多；顺手把相机拉近一点，
+			// 否则魔方在屏幕上会突然缩成一小块。转动时仍然留有余量。
+			window.__vrcDistScale = on ? 0.85 : 1;
+			var sc = po.twistyScene;
+			if (sc && sc.moveCamera) {
+				sc.moveCamera(0, on ? 0 : 6, true);
+				return;
+			}
+			var tw = po.twisty;
+			if (tw && tw.moveCamera) {
+				tw.moveCamera(0, on ? 0 : 6, true);
+			}
+		} catch (e) {}
+	}
+
 	// 每个小块的贴纸是独立 mesh，默认留了约 15% 的缝。跟随的时候魔方可以任意
 	// 角度观察，缝就没有意义了，放大贴纸把缝填掉，只留边框黑线表示分隔。
 	function setStickerScale(obj, k) {
@@ -503,6 +528,7 @@ var dsGyro = execMain(function() {
 			scaledObj = null;
 			setDistScale(1);
 			forceRender();
+			setCameraFront(false);
 		}
 		renderRow();
 	}
@@ -530,7 +556,8 @@ var dsGyro = execMain(function() {
 			var fc = (tw && tw.getFacelet) ? tw.getFacelet(tw) : null;
 			if (fc) { topFace = fc.charAt(4); }
 		} catch (e) {}
-		toast('已标定：屏幕按当前坐标正立（顶面 ' + topFace + '）');
+		setCameraFront(true);
+		toast('已标定：正对前面（顶面 ' + topFace + '）');
 	}
 
 	function setAutoFollow(v) {
@@ -687,6 +714,8 @@ var dsGyro = execMain(function() {
 		},
 		stop: function() {
 			stopFollow(true);
-		}
+		},
+		start: startFollow,
+		_cam: setCameraFront
 	};
 });
