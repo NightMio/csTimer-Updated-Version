@@ -188,13 +188,18 @@ window.twistyjs = (function() {
 		this.resize = function() {
 			// This function should be called after setting twistyContainer
 			// to the desired size.
-			var min = Math.min($(twistyContainer).width(), $(twistyContainer).height());
-			camera = new THREE.Camera(30, 1, 0, 1000);
+			var cw = $(twistyContainer).width();
+			var ch = $(twistyContainer).height();
+			var min = Math.min(cw, ch);
+			// 画布改用容器的真实宽高，而不是取短边做正方形：
+			// 之前 div 是 1112x387，画布却只有 387x387，左右白扔了 65% 的空间，
+			// 魔方一转到斜角就顶到边上被裁掉。相机按真实宽高比给 fov 就不会变形。
+			camera = new THREE.Camera(30, cw / (ch || 1), 0, 1000);
 			var ori = kernel.getProp('vrcOri', '6,12');
 			ori = ori.split(',');
 			moveCamera(~~ori[0] - 6, ~~ori[1] - 6);
 			camera.target.position = new THREE.Vector3(0, -0.075, 0);
-			renderer.setSize(min, min);
+			renderer.setSize(cw, ch);
 			touchCube.css({
 				'width': min,
 				'height': min,

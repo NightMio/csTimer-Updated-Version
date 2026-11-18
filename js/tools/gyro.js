@@ -194,7 +194,8 @@ var dsGyro = execMain(function() {
 			}
 			// 正视时只看到一个面，投影比斜视小得多；顺手把相机拉近一点，
 			// 否则魔方在屏幕上会突然缩成一小块。转动时仍然留有余量。
-			window.__vrcDistScale = on ? 0.85 : 1;
+			// 正视时拉近一点；回到斜视时按跟没跟随恢复原来的距离，别把跟随的余量吃掉。
+			window.__vrcDistScale = on ? 1.2 : (follow ? 1.45 : 1.15);
 			var sc = po.twistyScene;
 			if (sc && sc.moveCamera) {
 				sc.moveCamera(0, on ? 0 : 6, true);
@@ -204,7 +205,35 @@ var dsGyro = execMain(function() {
 			if (tw && tw.moveCamera) {
 				tw.moveCamera(0, on ? 0 : 6, true);
 			}
+			// 相机拉近以后默认那 15% 的贴纸缝会变得很扎眼，正视时也把贴纸放大填掉。
+			var obj = getObj3d();
+			if (obj) {
+				setStickerScale(obj, (on || follow) ? STICKER_SCALE : 1);
+				scaledObj = (on || follow) ? obj : null;
+			}
 		} catch (e) {}
+	}
+
+	// 有些打乱类型（PLL/OLL 等）自带 preScrT 整体旋转，虚拟魔方的显示坐标
+	// 就不是默认的 UF 了。这种时候用户一进去就想正对着前面看，而不是从
+	// 45° 斜上方看「黄顶+绿前」。所以坐标一变就同步一次相机。
+	var lastPreConj = null;
+	function syncCameraWithView() {
+		var pc = null;
+		try {
+			pc = cubeutil.getPreConj();
+		} catch (e) {
+			return;
+		}
+		if (pc === lastPreConj) {
+			return;
+		}
+		var po = getPuzzleObj();
+		if (!po || !po.twistyScene) {
+			return;   // 虚拟魔方还没建好，下一个 tick 再试
+		}
+		lastPreConj = pc;
+		setCameraFront(!!pc);
 	}
 
 	// 每个小块的贴纸是独立 mesh，默认留了约 15% 的缝。跟随的时候魔方可以任意
@@ -526,7 +555,7 @@ var dsGyro = execMain(function() {
 				setStickerScale(obj, 1);
 			}
 			scaledObj = null;
-			setDistScale(1);
+			setDistScale(1.2);
 			forceRender();
 			setCameraFront(false);
 		}
@@ -680,6 +709,7 @@ var dsGyro = execMain(function() {
 				viewQ = vq;
 			}
 		} catch (e) {}
+		syncCameraWithView();
 		renderRow();
 	}
 
