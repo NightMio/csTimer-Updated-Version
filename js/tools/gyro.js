@@ -604,6 +604,7 @@ var dsGyro = execMain(function() {
 			return follow;
 		},
 		getStatus: statusInfo,
+		calibrate: doCalibrate,
 		getViewQuat: function() {
 			return readViewQuat();
 		},

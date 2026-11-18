@@ -59,6 +59,12 @@ var shortcuts = execMain(function(){
 			kernel.pushSignal('reset', ['giikerVRC']);
 			return;
 		}
+		// q：把魔方当前姿态标定为默认朝向（陀螺仪跟随用）
+		if (e.which == 81 && !e.altKey && !e.ctrlKey && !e.metaKey &&
+			typeof dsGyro != 'undefined' && dsGyro && dsGyro.calibrate) {
+			dsGyro.calibrate();
+			return;
+		}
 		if (!kernel.getProp('useKSC')) {
 			return;
 		}
