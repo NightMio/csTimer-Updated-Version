@@ -279,7 +279,6 @@ var dsGyro = execMain(function() {
 		D: [0, -1, 0], L: [-1, 0, 0], B: [0, 0, -1]
 	};
 	var viewQ = null;
-	var baseQ = null;   // 标定锁定的基准显示姿态
 
 	function matToQuat(m) {
 		var tr = m[0][0] + m[1][1] + m[2][2];
@@ -362,12 +361,11 @@ var dsGyro = execMain(function() {
 		if (!obj) {
 			return;
 		}
+		// vq 是「当前显示坐标」相对默认 UF 的整体旋转（DF 视角下就是绕 Z 180°）。
+		// 左乘它：读到相对旋转为零时，魔方就停在当前坐标的正立姿态上，
+		// 而不是永远回到 UF；切换坐标后也会自动跟着换。
 		var vq = viewQ || readViewQuat() || { w: 1, x: 0, y: 0, z: 0 };
-		// baseQ 是标定时锁定的基准姿态；没标定过就用当前显示姿态。
-		// 左乘它保证「按 q 的那一刻魔方停在原地」，只是把当时的朝向定义成零点，
-		// 而不是回正到默认的 UF。
-		var base = baseQ || vq;
-		var qc = qmul(base, qmul(qmul(Q_M, qrel), qconj(Q_M)));
+		var qc = qmul(vq, qmul(qmul(Q_M, qrel), qconj(Q_M)));
 		obj.useQuaternion = true;
 		obj.quaternion.set(qc.x, qc.y, qc.z, qc.w);
 		if (obj !== scaledObj) {
@@ -418,7 +416,6 @@ var dsGyro = execMain(function() {
 		}
 		follow = true;
 		calibQ = null;
-		baseQ = null;
 		renderQ = null;
 		lastTick = 0;
 		vrcWaitCnt = 0;
@@ -459,15 +456,18 @@ var dsGyro = execMain(function() {
 			$.toast('还没有收到陀螺仪数据，无法标定');
 			return;
 		}
-		var qNow = qnorm(st.quat);
 		var ident = { w: 1, x: 0, y: 0, z: 0 };
-		var relOld = calibQ ? qmul(qconj(calibQ), qNow) : ident;
 		var vq = viewQ || readViewQuat() || ident;
-		// 先记下「标定前这一刻屏幕上是什么姿态」，标定后保持不动
-		baseQ = qmul(vq, qmul(qmul(Q_M, relOld), qconj(Q_M)));
-		calibQ = qNow;
-		renderQ = baseQ;
-		$.toast('已把当前朝向设为默认朝向');
+		calibQ = qnorm(st.quat);
+		lastTick = 0;
+		// 标定后立即把魔方摆到「当前坐标的正立姿态」，
+		// 这样按 q 的效果就是把零点对齐到 UF / DF / 任意当前坐标。
+		renderQ = vq;
+		if (follow) {
+			paint(vq);
+		}
+		var d = quatDesc(vq);
+		$.toast('已按当前坐标标定（' + (d == '无' ? 'UF' : d) + '）');
 	}
 
 	function setAutoFollow(v) {
