@@ -249,6 +249,13 @@ var dsGyro = execMain(function() {
 		};
 	}
 
+	// 相对旋转必须在「屏幕世界系」里算：
+	//   R = (Q_M·q) · conj(Q_M·calibQ)
+	// 标定后 q == calibQ 时 R = 单位四元数（屏幕停在当前坐标的正立姿态）。
+	// 关键：两边的 Q_M 都要乘到 q / calibQ 的左边，且 calibQ 也要参与。
+	// 旧写法 Q_M·conj(calibQ)·q·conj(Q_M) 等于把相对旋转先按「标定那一刻的设备朝向」
+	// 共轭了一遍：设备越歪（比如 PLL/DF 下把魔方翻成黄顶），转轴偏得越多，
+	// 表现就是「换个坐标后方向和现实反了」。
 	function targetQuat() {
 		var st = getGyroStat();
 		if (!st || !st.quat) {
@@ -258,7 +265,7 @@ var dsGyro = execMain(function() {
 		if (!calibQ) {
 			calibQ = q;
 		}
-		return qmul(qconj(calibQ), q);
+		return qmul(qmul(Q_M, q), qconj(qmul(Q_M, calibQ)));
 	}
 
 	// 「魔方视角」(giiOri) 会把显示内容整体转过去；陀螺仪跟随时必须把它抵消，
@@ -402,11 +409,14 @@ var dsGyro = execMain(function() {
 		if (!obj) {
 			return;
 		}
-		// 关键：虚拟魔方的逻辑状态（facelet）里已经包含了当前坐标的整体旋转。
-		// PLL 训练模式 preScrT=z2 时，resetVRC 会 applyMoves(z2) 真的把魔方转过去，
-		// 实测中心块从 URF 变成 DLF。所以这里绝对不能再左乘视角旋转，
-		// 否则等于转两次、屏幕上回到 UF —— 这正是「标定后还是 UF」的根因。
-		var qc = qmul(qmul(Q_M, qrel), qconj(Q_M));
+		// qrel 已经是「屏幕世界系」里的旋转（targetQuat 里做过 Q_M 共轭），
+		// 这里不能再共轭一次，否则等于把 Q_M 应用两遍：绕 X 看不出来，
+		// 但绕 Y/Z 的转动会变成绕另一个轴的转动（方向和现实对不上）。
+		//
+		// 另外虚拟魔方的逻辑状态（facelet）里已经包含了当前坐标的整体旋转
+		// （PLL 训练模式 preScrT=z2 时中心块就是 DLF），所以也不能再左乘视角旋转，
+		// 否则等于转两次、屏幕上回到 UF。
+		var qc = qrel;
 		obj.useQuaternion = true;
 		obj.quaternion.set(qc.x, qc.y, qc.z, qc.w);
 		if (obj !== scaledObj) {
@@ -416,13 +426,11 @@ var dsGyro = execMain(function() {
 		forceRender();
 	}
 
-	function loop() {
-		if (!follow) {
-			return;
-		}
-		rafId = requestAnimationFrame(loop);
+	// 单步：读目标姿态 → 平滑插值 → 渲染。
+	// 无头测试里 rAF 不一定推进，所以把这一步单独抽出来，测试可以手动 _step(dt)。
+	function step(dtOverride) {
 		var now = $.now();
-		var dt = lastTick ? Math.min(now - lastTick, 200) : 16;
+		var dt = dtOverride || (lastTick ? Math.min(now - lastTick, 200) : 16);
 		lastTick = now;
 		var tgt = targetQuat();
 		if (!tgt) {
@@ -441,6 +449,14 @@ var dsGyro = execMain(function() {
 			renderQ = qslerp(renderQ, tgt, alpha);
 		}
 		paint(renderQ);
+	}
+
+	function loop() {
+		if (!follow) {
+			return;
+		}
+		rafId = requestAnimationFrame(loop);
+		step();
 	}
 
 	function ensureVRC() {
@@ -660,6 +676,9 @@ var dsGyro = execMain(function() {
 		},
 		getStatus: statusInfo,
 		calibrate: doCalibrate,
+		_step: step,
+		_tgt: targetQuat,
+		_dbg: function() { return { calibQ: calibQ, renderQ: renderQ, viewQ: viewQ }; },
 		getViewQuat: function() {
 			return readViewQuat();
 		},

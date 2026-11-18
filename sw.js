@@ -6,7 +6,7 @@
 //   - 其它同源 GET：缓存优先 + 后台更新（stale-while-revalidate）—— 首屏快、离线可用
 //   - 跨域请求（WCA 登录等）：一律放行，不碰
 
-var CACHE_NAME = 'cstimer-ds-v1795013242';
+var CACHE_NAME = 'cstimer-ds-v1795013838';
 
 // 首屏必需的最小集合，装完就能离线开门
 var PRECACHE = [
