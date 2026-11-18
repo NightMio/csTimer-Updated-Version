@@ -6,7 +6,7 @@
 //   - 其它同源 GET：缓存优先 + 后台更新（stale-while-revalidate）—— 首屏快、离线可用
 //   - 跨域请求（WCA 登录等）：一律放行，不碰
 
-var CACHE_NAME = 'cstimer-ds-v1';
+var CACHE_NAME = 'cstimer-ds-v1795000552';
 
 // 首屏必需的最小集合，装完就能离线开门
 var PRECACHE = [
@@ -79,21 +79,25 @@ self.addEventListener('fetch', function (event) {
 		return;
 	}
 
-	// 静态资源：先给缓存，同时后台更新
+	// 静态资源：网络优先，失败回落缓存
+	//
+	// 这里原本是 stale-while-revalidate（先给缓存、后台更新）。问题是发布新版后，
+	// 用户刷新一次拿到的仍是上一版的 js，必须再刷一次才更新 —— 体验很糟，
+	// 而且开发者根本分不清"改了没生效"还是"根本没改"。
+	// 改成网络优先后，联网时永远拿最新，断网时仍然回落到缓存，离线能力不受影响。
 	event.respondWith(
-		caches.match(req).then(function (hit) {
-			var fetching = fetch(req).then(function (res) {
-				if (res && res.status === 200 && res.type === 'basic') {
-					var copy = res.clone();
-					caches.open(CACHE_NAME).then(function (cache) {
-						cache.put(req, copy);
-					});
-				}
-				return res;
-			}).catch(function () {
+		fetch(req).then(function (res) {
+			if (res && res.status === 200 && res.type === 'basic') {
+				var copy = res.clone();
+				caches.open(CACHE_NAME).then(function (cache) {
+					cache.put(req, copy);
+				});
+			}
+			return res;
+		}).catch(function () {
+			return caches.match(req).then(function (hit) {
 				return hit || Response.error();
 			});
-			return hit || fetching;
 		})
 	);
 });
