@@ -1,7 +1,7 @@
-// 智能魔方陀螺仪：状态指示 + 3D 跟随 + 标定
+// 智能魔方陀螺仪：3D 跟随 + 标定
 //
 // GYRO 帧本来就和 MOVE 帧走同一条 notify 通道，固件只要在推数据我们就能收到，
-// 不需要额外"开启"。实测 GAN12 ui FreePlay 一连接就在持续上报。
+// 不需要额外"开启"。实测 GAN12 ui FreePlay 一连接就在持续上报（约 20 Hz）。
 //
 // 固件每秒只推 20 帧出头，直接照搬会一卡一顿，所以这里对四元数做球面插值，
 // 用 rAF（约 60fps）补间，视觉上连续。
@@ -11,6 +11,9 @@
 //   csTimer 世界系： +X = 红面(R)，+Y = 白面(U)，+Z = 绿面(F)
 //   两者差一个绕 X 轴 -90° 的旋转，四元数 Q_M = (-√½, 0, 0, √½)
 //   设备姿态 q 转到 csTimer 世界系：q' = Q_M · q_rel · conj(Q_M)
+//
+// 界面：不占主界面，全部收进「设置 → 虚拟&蓝牙魔方」面板底部那一行
+//       （#dsGyroRow 由 kernel.js 的 generateDiv 预留）。
 
 var dsGyro = execMain(function() {
 
@@ -25,21 +28,27 @@ var dsGyro = execMain(function() {
 	var SMOOTH_TAU = 45;
 	// 跟随时的贴纸放大倍数：默认 stickerWidth=1.7，放大到接近 2 能填满缝隙
 	var STICKER_SCALE = 1.15;
+	// 多久没收到帧就算断开
+	var IDLE_MS = 3000;
 
 	var follow = false;
 	var calibQ = null;
 	var renderQ = null;      // 用于渲染的插值中间量（GAN 系相对姿态）
 	var lastTick = 0;
 	var rafId = 0;
-	var div = null;
-	var txtEl = null;
-	var dotEl = null;
-	var btnFollow = null;
 	var tickTid = 0;
 	var vrcWaitCnt = 0;
-	var attached = false;
-	var autoShowPatched = false;
 	var scaledObj = null;
+	var lastSeenTs = 0;
+	var autoFollow = true;
+	var rowEls = null;
+
+	try {
+		var savedAuto = localStorage.getItem('dsGyroAuto');
+		if (savedAuto === '0') {
+			autoFollow = false;
+		}
+	} catch (e) {}
 
 	function qmul(a, b) {
 		return {
@@ -181,38 +190,38 @@ var dsGyro = execMain(function() {
 	}
 
 	function hasGyroFrame(st) {
-		return st && st.frames > 0 && ($.now() - st.lastTs) < 3000;
+		return st && st.frames > 0 && ($.now() - st.lastTs) < IDLE_MS;
 	}
 
 	function statusInfo() {
 		var st = getGyroStat();
 		if (!st || (!st.name && !st.frames && st.supported === null)) {
 			return {
-				color: '#888',
+				color: '#999',
 				text: '未连接'
 			};
 		}
 		if (hasGyroFrame(st)) {
 			return {
 				color: '#2ecc40',
-				text: st.rate + ' Hz'
+				text: '工作中 ' + st.rate + ' Hz'
 			};
 		}
 		if (st.frames > 0) {
 			return {
 				color: '#ff9500',
-				text: '已停'
+				text: '已停止上报'
 			};
 		}
 		if (st.supported === false) {
 			return {
-				color: '#888',
-				text: '不支持'
+				color: '#999',
+				text: '此型号不支持'
 			};
 		}
 		return {
 			color: '#ff9500',
-			text: '无数据'
+			text: '没有数据'
 		};
 	}
 
@@ -279,6 +288,9 @@ var dsGyro = execMain(function() {
 	}
 
 	function startFollow() {
+		if (follow) {
+			return;
+		}
 		follow = true;
 		calibQ = null;
 		renderQ = null;
@@ -289,7 +301,7 @@ var dsGyro = execMain(function() {
 		if (!rafId) {
 			rafId = requestAnimationFrame(loop);
 		}
-		renderButtons();
+		renderRow();
 	}
 
 	function stopFollow(reset) {
@@ -309,7 +321,7 @@ var dsGyro = execMain(function() {
 			setDistScale(1);
 			forceRender();
 		}
-		renderButtons();
+		renderRow();
 	}
 
 	function doCalibrate() {
@@ -323,168 +335,123 @@ var dsGyro = execMain(function() {
 		$.toast('已把魔方当前朝向设为默认朝向');
 	}
 
-	function renderButtons() {
-		if (!btnFollow) {
-			return;
-		}
-		btnFollow.text(follow ? '停止' : '跟随');
-		btnFollow.css('background', follow ? '#2ecc40' : '');
-		btnFollow.css('color', follow ? '#fff' : '');
-	}
-
-	function render() {
-		var info = statusInfo();
-		if (dotEl) {
-			dotEl.css('background', info.color);
-		}
-		if (txtEl) {
-			txtEl.text(info.text);
-		}
-		if (btnFollow) {
-			btnFollow.css('opacity', hasGyroFrame(getGyroStat()) ? 1 : 0.45);
-		}
-		attachDiv();
-		patchAutoShow();
-	}
-
-	// 挂在虚拟魔方画布正下方。用 fixed 定位手动跟住画布，
-	// 既不会受父容器 font-size / overflow 影响，也不会跑出窗口。
-	function positionDiv() {
-		if (!div || !attached) {
-			return;
-		}
+	function setAutoFollow(v) {
+		autoFollow = !!v;
 		try {
-			var c = $('#vrcDiv canvas');
-			if (!c.length) {
-				div.css({
-					top: 'auto',
-					bottom: '12px'
-				});
-				return;
-			}
-			var off = c.offset();
-			var top = off.top + c.outerHeight() + 2;
-			var maxTop = $(window).height() - 26;
-			if (top > maxTop) {
-				top = maxTop;
-			}
-			if (top < 0) {
-				top = 0;
-			}
-			div.css({
-				bottom: 'auto',
-				top: top + 'px'
-			});
+			localStorage.setItem('dsGyroAuto', autoFollow ? '1' : '0');
 		} catch (e) {}
+		if (autoFollow && hasGyroFrame(getGyroStat())) {
+			startFollow();
+		} else if (!autoFollow) {
+			stopFollow(true);
+		}
 	}
 
-	function attachDiv() {
-		if (!div) {
-			return;
+	// ---- 设置面板里那一行 ----------------------------------------------------
+	function buildRow() {
+		var holder = $('#dsGyroRow td');
+		if (!holder.length) {
+			rowEls = null;
+			return false;
 		}
-		if (!attached) {
-			$('body').append(div);
-			div.css({
-				position: 'fixed',
-				left: '50%',
-				transform: 'translateX(-50%)',
-				background: 'rgba(255,255,255,0.85)',
-				border: '1px solid rgba(0,0,0,0.12)',
-				borderRadius: '4px',
-				padding: '2px 8px',
-				zIndex: 9997
-			});
-			attached = true;
+		if (rowEls && $.contains(document.documentElement, rowEls.box[0])) {
+			return true;
 		}
-		positionDiv();
-	}
-
-	function buildDiv() {
-		if (div) {
-			return;
-		}
-		// 字号必须用 px：父容器（虚拟魔方）的 font-size 是按画布尺寸算出来的，
-		// 用 em 会被放大成几百像素。
-		div = $("<div id='dsGyroDiv'></div>").css({
-			fontSize: '13px',
-			lineHeight: '20px',
-			color: '#444',
-			whiteSpace: 'nowrap',
-			pointerEvents: 'auto'
+		holder.empty();
+		var box = $('<div>').css({
+			padding: '0.15em 0',
+			whiteSpace: 'nowrap'
 		});
-		dotEl = $("<span></span>").css({
+		var dot = $('<span>').css({
 			display: 'inline-block',
-			width: '8px',
-			height: '8px',
+			width: '0.6em',
+			height: '0.6em',
 			borderRadius: '50%',
-			background: '#888',
-			marginRight: '5px',
+			background: '#999',
+			marginRight: '0.3em',
 			verticalAlign: 'middle'
 		});
-		txtEl = $("<span></span>").text('陀螺仪');
-		btnFollow = $("<button type='button'>跟随</button>").css({
-			marginLeft: '6px',
-			fontSize: '12px',
-			lineHeight: '16px',
-			padding: '0 6px',
-			cursor: 'pointer',
-			border: '1px solid rgba(0,0,0,0.2)',
-			borderRadius: '3px',
-			background: '#f6f6f6'
+		var txt = $('<span>').text('陀螺仪');
+		var btnCal = $('<input type="button">').val('标定').css({
+			marginLeft: '0.4em'
+		}).click(doCalibrate);
+		var btnFollow = $('<input type="button">').css({
+			marginLeft: '0.3em'
 		}).click(function() {
 			if (follow) {
 				stopFollow(true);
 			} else {
 				if (!hasGyroFrame(getGyroStat())) {
-					$.toast('还没有陀螺仪数据，无法跟随');
+					$.toast('还没有收到陀螺仪数据');
 					return;
 				}
 				startFollow();
 			}
 		});
-		var btnCal = $("<button type='button'>标定</button>").css({
-			marginLeft: '4px',
-			fontSize: '12px',
-			lineHeight: '16px',
-			padding: '0 6px',
-			cursor: 'pointer',
-			border: '1px solid rgba(0,0,0,0.2)',
-			borderRadius: '3px',
-			background: '#f6f6f6'
-		}).click(doCalibrate);
-		div.append(dotEl).append(txtEl).append(btnFollow).append(btnCal);
+		var lab = $('<label>').css({
+			marginLeft: '0.6em',
+			cursor: 'pointer'
+		});
+		var chk = $('<input type="checkbox">').css({
+			marginRight: '0.2em',
+			verticalAlign: 'middle'
+		}).prop('checked', autoFollow).change(function() {
+			setAutoFollow($(this).prop('checked'));
+		});
+		lab.append(chk).append('连接后自动跟随');
+		box.append(dot).append(txt).append(btnCal).append(btnFollow).append(lab);
+		holder.append(box);
+		rowEls = {
+			box: box,
+			dot: dot,
+			txt: txt,
+			btnFollow: btnFollow
+		};
+		return true;
 	}
 
-	// 跟随 csTimer「计时过程中隐藏所有元素」：计时开始/结束时同步显隐。
-	// setAutoShow 挂在 kernel.ui 上，不是 kernel 本身。
-	function patchAutoShow() {
-		if (autoShowPatched) {
+	function renderRow() {
+		if (!buildRow()) {
 			return;
 		}
-		var ui = kernel && kernel.ui;
-		if (!ui || typeof ui.setAutoShow != 'function') {
-			return;
+		var info = statusInfo();
+		rowEls.dot.css('background', info.color);
+		rowEls.txt.text('陀螺仪：' + info.text);
+		if (rowEls.btnFollow) {
+			rowEls.btnFollow.val(follow ? '停止跟随' : '开始跟随');
+			rowEls.btnFollow.css('opacity', hasGyroFrame(getGyroStat()) ? 1 : 0.5);
 		}
-		autoShowPatched = true;
-		var orig = ui.setAutoShow;
-		ui.setAutoShow = function(visible) {
-			orig.apply(ui, arguments);
-			var vis = visible || !kernel.getProp('ahide');
-			div.toggle(!!vis);
-		};
+	}
+
+	// ---- 自动跟随 / 自动停止 --------------------------------------------------
+	kernel.regListener('dsGyro', 'giikerGyroStart', function() {
+		if (autoFollow) {
+			startFollow();
+		}
+	});
+
+	function tick() {
+		var st = getGyroStat();
+		if (st && st.lastTs && st.lastTs !== lastSeenTs) {
+			lastSeenTs = st.lastTs;
+		}
+		// 断开或固件停推之后自动收手，避免魔方卡在歪着的姿态
+		if (follow && !hasGyroFrame(st)) {
+			stopFollow(true);
+		}
+		renderRow();
 	}
 
 	function startTicker() {
 		if (tickTid) {
 			return;
 		}
-		tickTid = setInterval(render, 500);
-		render();
+		tickTid = setInterval(tick, 500);
+		tick();
 	}
 
 	$(function() {
 		try {
-			buildDiv();
 			startTicker();
 		} catch (e) {}
 	});
@@ -494,6 +461,9 @@ var dsGyro = execMain(function() {
 			return follow;
 		},
 		getStatus: statusInfo,
+		isAuto: function() {
+			return autoFollow;
+		},
 		stop: function() {
 			stopFollow(true);
 		}

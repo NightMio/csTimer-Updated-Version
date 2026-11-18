@@ -500,7 +500,7 @@ execMain(function(timer) {
 			}
 		}, /^(?:preScrT?|isTrainScr|giiOri|giiVRC)$/);
 		kernel.regListener('giikerVRC', 'reset', function(signal, value) {
-			if (!GiikerCube.isConnected()) {
+			if (!giikerutil.isConnected()) {
 				$.confirm('请先连接智能魔方，再使用重置功能');
 				return;
 			}
@@ -513,7 +513,7 @@ execMain(function(timer) {
 		});
 
 		kernel.regListener('giikerVRC', 'scramble', function(signal, value) {
-			if (enableVRC && timer.status() == -1 && kernel.getProp('giiMode') == 'at' && GiikerCube.isConnected()) {
+			if (enableVRC && timer.status() == -1 && kernel.getProp('giiMode') == 'at' && giikerutil.isConnected()) {
 				clearReadyTid();
 				waitReadyTid = setTimeout(function() {
 					markScrambled($.now());
@@ -535,7 +535,7 @@ execMain(function(timer) {
 	timer.giiker = {
 		setEnable: function(input) { //s: stackmat, m: moyu
 			enable = input == 'g';
-			if (enable && !GiikerCube.isConnected()) {
+			if (enable && !giikerutil.isConnected()) {
 				startConnect();
 			} else if (!enable) {
 				giikerutil.stop();
@@ -569,7 +569,7 @@ execMain(function(timer) {
 			}
 		},
 		onkeyup: function(keyCode) {
-			if (enable && keyCode == 32 && !GiikerCube.isConnected()) {
+			if (enable && keyCode == 32 && !giikerutil.isConnected()) {
 				startConnect();
 			}
 		},

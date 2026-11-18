@@ -1118,8 +1118,8 @@ var stats = execMain(function(kpretty, round, kpround) {
 			return sessionData[idx]['rank'] + '-' + sessionData[idx]['name'];
 		}
 
-		// 按给定打乱类型生成分组名，如 "WCA 三阶速拧"；重名自动追加 (2)(3)...
-		function nameFromType(type, extraUsed) {
+		// 某打乱类型对应的「基名」，不含 (2)(3) 这类重名后缀
+		function baseNameOf(type) {
 			var base = '';
 			try {
 				base = scramble.getTypeName(type || '333');
@@ -1135,6 +1135,33 @@ var stats = execMain(function(kpretty, round, kpround) {
 			if (parts.length == 2 && parts[0] == parts[1]) {
 				base = parts[0];
 			}
+			return base;
+		}
+
+		// 按给定打乱类型生成分组名，如 "WCA 三阶速拧"；重名自动追加 (2)(3)...
+		// 某打乱类型对应的「基名」，不含 (2)(3) 这类重名后缀
+		function baseNameOf(type) {
+			var base = '';
+			try {
+				base = scramble.getTypeName(type || '333');
+			} catch (e) {
+				base = '';
+			}
+			base = (base || '').replace(/>/g, ' ').replace(/\s+/g, ' ').trim();
+			if (!base) {
+				base = type || '333';
+			}
+			// 主模式与子模式同名时只留一个（如 '三阶速拧 三阶速拧' 之类）
+			var parts = base.split(' ');
+			if (parts.length == 2 && parts[0] == parts[1]) {
+				base = parts[0];
+			}
+			return base;
+		}
+
+		// 按给定打乱类型生成分组名，如 'WCA 三阶速拧'；重名自动追加 (2)(3)...
+		function nameFromType(type, extraUsed) {
+			var base = baseNameOf(type);
 			var used = {};
 			for (var k in sessionData) {
 				var nm = (sessionData[k] || {}).name;
@@ -1187,6 +1214,59 @@ var stats = execMain(function(kpretty, round, kpround) {
 			if (changed) {
 				kernel.setProp('sessionData', JSON.stringify(sessionData));
 			}
+		}
+
+		// 当前分组的打乱模式变了，分组名跟着实时变。
+		// 只改「自动生成」的名字，用户手动改过的一律不动。
+		function syncSessionName(type, prevType) {
+			var d = sessionData[sessionIdx];
+			if (!d || !d['name']) {
+				return;
+			}
+			var oldType = prevType || ((d['opt'] || {})['scrType']) || '333';
+			var m = /^(.*)\(\d+\)$/.exec(d['name']);
+			var stem = m ? m[1] : d['name'];
+			if (stem !== baseNameOf(oldType)) {
+				return;
+			}
+			var keep = d['name'];
+			d['name'] = '';   // 先把自己排除掉，免得算出 (2)
+			var newName = nameFromType(type);
+			d['name'] = newName;
+			if (newName != keep) {
+				kernel.setProp('sessionData', JSON.stringify(sessionData));
+				fixSessionSelect();
+			}
+		}
+
+		// 切换打乱模式时，把「自动命名」的当前分组名同步成新模式名。
+		// 只在名字确实是自动生成的时候改（等于旧模式的基名，可带 (n) 后缀），
+		// 用户手动改过的名字一律不动。
+		function syncSessionName(type, prevType) {
+			var d = sessionData[sessionIdx];
+			if (!d || !d['name']) {
+				return;
+			}
+			var oldType = prevType || ((d['opt'] || {})['scrType']) || '333';
+			var oldBase = baseNameOf(oldType);
+			var curName = String(d['name']);
+			var m = /^(.*?)\((\d+)\)$/.exec(curName);
+			var stem = m ? m[1] : curName;
+			if (stem !== oldBase) {
+				return;
+			}
+			if (baseNameOf(type) === oldBase) {
+				return;
+			}
+			d['name'] = '';
+			var newName = nameFromType(type);
+			if (!newName || newName == curName) {
+				d['name'] = curName;
+				return;
+			}
+			d['name'] = newName;
+			kernel.setProp('sessionData', JSON.stringify(sessionData));
+			fixSessionSelect();
 		}
 
 		// 分组下拉框宽度自适应内容，避免留大片空白或文字被截断
@@ -1627,9 +1707,12 @@ var stats = execMain(function(kpretty, round, kpround) {
 				} else if (value[0] == 'sessionN') {
 					sessionIdxMax = value[1];
 				} else if (value[0] == 'scrType') {
+					var prevScrType = curScrType;
 					curScrType = value[1];
 					if (value[2] == 'modify' && kernel.getProp('scr2ss')) {
 						createSession(undefined, false);
+					} else {
+						syncSessionName(value[1], prevScrType);
 					}
 				} else if (value[0] == 'statclr') {
 					if (value[1]) {

@@ -82,7 +82,7 @@ var scrHinter = execMain(function(CubieCube) {
 	}
 
 	function checkState(state, puzzle) {
-		if (!rawScrTxt || !rawScrValid || !GiikerCube.isConnected()
+		if (!rawScrTxt || !rawScrValid || !giikerutil.isConnected()
 				|| tools.getCurPuzzle() != puzzle || timer.getCurTime() != 0 || timer.status() > 0) {
 			return;
 		}
@@ -232,7 +232,7 @@ var giikerutil = execMain(function(CubieCube) {
 		}
 		statusDiv.empty();
 		statusDiv.append($('<tr>').append($('<td colspan=2>').append(connectClick, debugClick)));
-		if (GiikerCube.isConnected() && deviceName) {
+		if (isAnyConnected() && deviceName) {
 			statusDiv.append($('<tr>').append(batteryTd, slopeTd))
 				.append($('<tr>').append($('<td colspan=2>').append(resetClick.unbind('click').click(markSolved))))
 				.append($('<tr>').append($('<td>').append(algCubingClick),$('<td>').append(lastSolveClick)))
@@ -389,6 +389,16 @@ var giikerutil = execMain(function(CubieCube) {
 
 	function renderBatDiv() {
 		var div = buildBatDiv();
+		// 没连魔方时整个电池不显示，避免占着右上角
+		var connected = false;
+		try {
+			connected = isAnyConnected() && !!batValue;
+		} catch (e) {}
+		if (!connected) {
+			div.hide();
+			return;
+		}
+		div.show();
 		var level = batValue || 0;
 		var st = batStyleFor(level);
 		if (level && level <= 10) {
@@ -408,6 +418,9 @@ var giikerutil = execMain(function(CubieCube) {
 		batTickTid = setInterval(function() {
 			batBlinkOn = !batBlinkOn;
 			renderBatDiv();
+			try {
+				renderDeviceRow();
+			} catch (e) {}
 		}, 1000);
 	}
 
@@ -432,7 +445,7 @@ var giikerutil = execMain(function(CubieCube) {
 	}
 
 	function pollUpdateBattery() {
-		if (GiikerCube.isConnected()) {
+		if (isAnyConnected()) {
 			GiikerCube.getCube().getBatteryLevel().then(function(value) {
 				updateBattery(value);
 			});
@@ -586,6 +599,234 @@ var giikerutil = execMain(function(CubieCube) {
 		scrHinter.checkState(curCubie, curPuzzle);
 	}
 
+	// ---- 多智能魔方 ---------------------------------------------------------
+	// 浏览器 requestDevice 一次只能选中一个设备（没有多选 API），
+	// 所以"多连"的做法是：点一次「再连一个」加一台，然后在下拉里切换当前使用的魔方。
+	var extraDevices = [];
+	var activeDeviceId = 0;
+	var deviceSeq = 0;
+	var lastDeviceSig = '';
+
+	function listDevices() {
+		var ret = [{
+			id: 0,
+			inst: GiikerCube,
+			name: deviceName || '主魔方',
+			puzzle: curPuzzle || '',
+			snap: null
+		}];
+		for (var i = 0; i < extraDevices.length; i++) {
+			ret.push(extraDevices[i]);
+		}
+		return ret;
+	}
+
+	function getDeviceRec(id) {
+		var all = listDevices();
+		for (var i = 0; i < all.length; i++) {
+			if (all[i].id == id) {
+				return all[i];
+			}
+		}
+		return null;
+	}
+
+	function isAnyConnected() {
+		try {
+			if (GiikerCube['isConnected']()) {
+				return true;
+			}
+		} catch (e) {}
+		for (var i = 0; i < extraDevices.length; i++) {
+			try {
+				if (extraDevices[i].inst.isConnected()) {
+					return true;
+				}
+			} catch (e) {}
+		}
+		return false;
+	}
+
+	function makeDeviceCallback(id) {
+		return function (facelet, prevMoves, lastTs, hardware, puzzle) {
+			var rec = getDeviceRec(id);
+			if (rec) {
+				rec.name = hardware || rec.name;
+				rec.puzzle = puzzle || rec.puzzle;
+				rec.snap = {
+					facelet: facelet,
+					prevMoves: prevMoves,
+					lastTs: lastTs,
+					hardware: hardware,
+					puzzle: puzzle
+				};
+			}
+			if (id == activeDeviceId) {
+				giikerCallback(facelet, prevMoves, lastTs, hardware, puzzle);
+			} else {
+				renderDeviceRow();
+			}
+		};
+	}
+
+	function switchDevice(id) {
+		var rec = getDeviceRec(id);
+		if (!rec) {
+			return;
+		}
+		activeDeviceId = ~~id;
+		if (!rec.snap) {
+			renderDeviceRow();
+			return;
+		}
+		// 换魔方相当于重新开始一次解：清掉上一步的增量与时间轴，用完整 facelet 重建
+		cleanup();
+		deviceName = '';
+		giikerCallback(rec.snap.facelet, [], rec.snap.lastTs, rec.snap.hardware, rec.snap.puzzle);
+		renderDeviceRow();
+	}
+
+	function addDevice() {
+		var id = ++deviceSeq;
+		var inst = execMain(BtDeviceGroupFactory);
+		var rec = {
+			id: id,
+			inst: inst,
+			name: '魔方 ' + id,
+			puzzle: '',
+			snap: null
+		};
+		extraDevices.push(rec);
+		inst.setCallback(makeDeviceCallback(id));
+		inst.setEventCallback(function (info, evt) {
+			if (id == activeDeviceId) {
+				giikerEvtCallback(info, evt);
+			}
+			renderDeviceRow();
+		});
+		inst.setGyroCallback(giikerGyroCallback);
+		return inst.init().then(function () {
+			renderDeviceRow();
+			logohint.push(LGHINT_BTCONSUC);
+			// 新连上的魔方立即可用，直接切过去
+			if (rec.snap) {
+				switchDevice(id);
+			}
+		}).catch(function (e) {
+			giikerutil.log('[giiker] addDevice failed', e);
+			for (var i = 0; i < extraDevices.length; i++) {
+				if (extraDevices[i].id == id) {
+					extraDevices.splice(i, 1);
+					break;
+				}
+			}
+			renderDeviceRow();
+		});
+	}
+
+	function disconnectDevice(id) {
+		var rec = getDeviceRec(id);
+		if (!rec) {
+			return Promise.resolve();
+		}
+		return Promise.resolve(rec.inst.stop()).then(function () {
+			if (rec.id != 0) {
+				for (var i = 0; i < extraDevices.length; i++) {
+					if (extraDevices[i].id == rec.id) {
+						extraDevices.splice(i, 1);
+						break;
+					}
+				}
+			}
+			if (activeDeviceId == rec.id) {
+				activeDeviceId = 0;
+			}
+			renderDeviceRow();
+		}).catch(function () {
+			renderDeviceRow();
+		});
+	}
+
+	function buildDeviceRow() {
+		var cell = $('#dsCubeRow td');
+		if (!cell.length) {
+			return null;
+		}
+		if (cell.data('dsBuilt')) {
+			return cell;
+		}
+		cell.data('dsBuilt', true);
+		cell.empty();
+		var wrap = $('<div>').css({
+			'padding': '0.15em 0',
+			'white-space': 'nowrap'
+		});
+		wrap.append($('<span>').text('已连接魔方：'));
+		var sel = $('<select id="dsCubeSelect">').css({
+			'font-size': '0.95em',
+			'max-width': '12em'
+		});
+		var btnAdd = $('<input type="button">').val('再连一个').css({
+			'margin-left': '0.5em',
+			'cursor': 'pointer'
+		}).click(function () {
+			addDevice();
+		});
+		var btnDisc = $('<input type="button">').val('断开').css({
+			'margin-left': '0.3em',
+			'cursor': 'pointer'
+		}).click(function () {
+			disconnectDevice(~~$('#dsCubeSelect').val());
+		});
+		wrap.append(sel).append(btnAdd).append(btnDisc);
+		cell.append(wrap);
+		return cell;
+	}
+
+	function renderDeviceRow() {
+		var cell = buildDeviceRow();
+		if (!cell) {
+			return;
+		}
+		var sel = $('#dsCubeSelect');
+		if (!sel.length) {
+			return;
+		}
+		var all = listDevices();
+		var sig = activeDeviceId + '|';
+		for (var i = 0; i < all.length; i++) {
+			var cc = false;
+			try {
+				cc = all[i].inst.isConnected();
+			} catch (e) {}
+			sig += all[i].id + ':' + (all[i].name || '') + ':' + (cc ? 1 : 0) + ',';
+		}
+		if (sig === lastDeviceSig && sel.children().length) {
+			sel.val(String(activeDeviceId));
+			return;
+		}
+		lastDeviceSig = sig;
+		sel.empty();
+		for (var i = 0; i < all.length; i++) {
+			var d = all[i];
+			var label = d.name || ('魔方 ' + d.id);
+			if (d.puzzle) {
+				label += ' (' + d.puzzle + ')';
+			}
+			var connected = false;
+			try {
+				connected = d.inst.isConnected();
+			} catch (e) {}
+			if (!connected) {
+				label += ' · 未连接';
+			}
+			sel.append($('<option>').val(d.id).text(label));
+		}
+		sel.val(String(activeDeviceId));
+		sel.unbind('change').change(function () {
+			switchDevice(~~$(this).val());
+		});
+	}
 	// ---- 陀螺仪 (gyroscope) -------------------------------------------------
 	var gyroStat = {
 		frames: 0,      // 收到的 GYRO 帧总数
@@ -964,39 +1205,33 @@ var giikerutil = execMain(function(CubieCube) {
 		GiikerCube.setEventCallback(giikerEvtCallback);
 		GiikerCube.setGyroCallback(giikerGyroCallback);
 		resetGyroStat();
-		if (GiikerCube.setGyroCallback) {
-			GiikerCube.setGyroCallback(giikerGyroCallback);
-		}
-		resetGyroStat();
-		gyroStat.supported = null;
-		gyroStat.name = null;
-		GiikerCube.setGyroCallback(giikerGyroCallback);
-		GiikerCube.setGyroCallback(giikerGyroCallback);
-		gyroStat.frames = 0;
-		gyroStat.quat = null;
-		gyroStat.vel = null;
-		gyroRateWin.length = 0;
-		if (!GiikerCube.isConnected()) {
+		if (!isAnyConnected()) {
 			return GiikerCube.init().then(function () {
 				logohint.push(LGHINT_BTCONSUC);
+				renderDeviceRow();
 			});
 		} else {
+			renderDeviceRow();
 			return Promise.resolve();
 		}
 	}
 
 	function stop() {
-		if (GiikerCube.isConnected()) {
-			return GiikerCube.stop().then(function () {
-				giikerEvtCallback('disconnect');
-			});
-		} else {
-			return Promise.resolve();
+		var ps = [];
+		for (var i = 0; i < extraDevices.length; i++) {
+			ps.push(Promise.resolve(extraDevices[i].inst.stop()).catch($.noop));
 		}
+		extraDevices = [];
+		activeDeviceId = 0;
+		ps.push(Promise.resolve(GiikerCube.stop()).catch($.noop));
+		return Promise.all(ps).then(function () {
+			giikerEvtCallback('disconnect');
+			renderDeviceRow();
+		});
 	}
 
 	function disconnect() {
-		if (GiikerCube.isConnected() && confirm(GIIKER_DBG.split('|')[1])) {
+		if (isAnyConnected() && confirm(GIIKER_DBG.split('|')[1])) {
 			stop();
 		}
 	}
@@ -1234,6 +1469,11 @@ var giikerutil = execMain(function(CubieCube) {
 		tsLinearFix: tsLinearFix,
 		updateBattery: updateBattery,
 		getGyroStat: getGyroStat,
+		addDevice: addDevice,
+		switchDevice: switchDevice,
+		listDevices: listDevices,
+		isConnected: isAnyConnected,
+		renderDeviceRow: renderDeviceRow,
 		setGyroMeta: setGyroMeta,
 		setLastSolve: setLastSolve,
 		log: debugInfo.appendLog,

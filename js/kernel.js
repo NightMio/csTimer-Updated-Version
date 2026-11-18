@@ -248,6 +248,12 @@ var kernel = execMain(function() {
 					}
 					optTable.append($('<tr>').append(valTd, srTd));
 				}
+				if (module == 'vrc') {
+					// 已连接魔方列表，由 js/tools/bluetoothutil.js 填充
+					optTable.append($('<tr id="dsCubeRow">').append($('<td colspan="3">')));
+					// 陀螺仪状态 / 标定 / 自动跟随，由 js/tools/gyro.js 填充
+					optTable.append($('<tr id="dsGyroRow">').append($('<td colspan="3">')));
+				}
 			}
 			optTable.append($('<tr style="height: 10em;">'));
 			subDivs[selectedTab][0].click();
